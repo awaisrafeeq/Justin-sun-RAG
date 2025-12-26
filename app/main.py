@@ -1,0 +1,26 @@
+from fastapi import FastAPI
+
+from app.config import settings
+from app.utils.logging import configure_logging
+
+
+def create_app() -> FastAPI:
+    configure_logging(settings.log_level)
+    app = FastAPI(title="Curious Concierge API", version="0.1.0")
+
+    @app.get("/health")
+    async def health_check():
+        return {
+            "status": "ok",
+            "environment": settings.app_env,
+            "services": {
+                "postgres": settings.postgres_host,
+                "redis": settings.redis_host,
+                "qdrant": settings.qdrant_host,
+            },
+        }
+
+    return app
+
+
+app = create_app()
