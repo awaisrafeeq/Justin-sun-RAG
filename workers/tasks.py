@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from celery import shared_task
 
+from app.ingestion.audio_processor import AudioDownloadError, download_audio
 from app.ingestion.docling_client import get_docling_processor
-from app.storage.embeddings import EmbeddingClient
+from app.storage.database import AsyncSessionLocal
+from app.storage.models import Episode
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +20,7 @@ logger = logging.getLogger(__name__)
 @shared_task(name="workers.tasks.process_pdf")
 def process_pdf_task(file_path: str) -> dict:
     """
-    Placeholder task: convert a PDF into chunks via Docling and return summary stats.
+    Convert a PDF into chunks via Docling and return summary stats.
     """
     processor = get_docling_processor()
     chunks = processor.process_pdf(Path(file_path))
@@ -22,29 +28,37 @@ def process_pdf_task(file_path: str) -> dict:
     return {"filename": Path(file_path).name, "chunks": len(chunks)}
 
 
-@shared_task(name="workers.tasks.process_audio")
-def process_audio_task(audio_bytes: bytes, source_url: str | None = None) -> dict:
+@shared_task(
+    bind=True,
+    name="workers.tasks.process_episode",
+    autoretry_for=(AudioDownloadError, httpx.HTTPError),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 3},
+)
+def process_episode_task(self, episode_id: str) -> dict:
     """
-    Placeholder task for audio ingestion. In production this would fetch the audio first.
+    Download podcast audio, run Docling transcription, update episode status.
     """
-    processor = get_docling_processor()
-    chunks = processor.process_audio(audio_bytes, source_url=source_url)
-    logger.info("Processed audio %s into %s segments", source_url, len(chunks))
-    return {"source_url": source_url, "chunks": len(chunks)}
 
+    async def _run() -> dict:
+        episode_uuid = uuid.UUID(episode_id)
+        async with AsyncSessionLocal() as session:
+            episode = await session.get(Episode, episode_uuid)
+            if not episode:
+                raise ValueError(f"Episode {episode_id} not found")
+            if not episode.audio_url:
+                raise ValueError(f"Episode {episode_id} missing audio_url")
 
-@shared_task(name="workers.tasks.embed_chunks")
-def embed_chunks_task(text_chunks: list[str]) -> dict:
-    """
-    Example Celery task for embedding text asynchronously.
-    """
-    embedding_client = EmbeddingClient()
+            audio_bytes = download_audio(episode.audio_url)
+            processor = get_docling_processor()
+            chunks = processor.process_audio(audio_bytes, source_url=episode.audio_url)
 
-    async def _embed() -> list[list[float]]:
-        return await embedding_client.embed_documents(text_chunks)
+            episode.status = "transcribed"
+            episode.processed_at = datetime.now(timezone.utc)
+            episode.has_errors = False
+            await session.commit()
 
-    import asyncio
+            logger.info("Episode %s transcribed into %s chunks", episode_id, len(chunks))
+            return {"episode_id": episode_id, "chunks": len(chunks)}
 
-    vectors = asyncio.run(_embed())
-    logger.info("Embedded %s chunks", len(text_chunks))
-    return {"count": len(vectors)}
+    return asyncio.run(_run())

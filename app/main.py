@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.api.routes import router as api_router
 from app.config import settings
 from app.utils.logging import configure_logging
 
@@ -7,6 +8,8 @@ from app.utils.logging import configure_logging
 def create_app() -> FastAPI:
     configure_logging(settings.log_level)
     app = FastAPI(title="Curious Concierge API", version="0.1.0")
+
+    app.include_router(api_router, prefix="/api")
 
     @app.get("/health")
     async def health_check():
