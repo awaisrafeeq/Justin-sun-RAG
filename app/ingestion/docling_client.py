@@ -9,8 +9,7 @@ from typing import Iterable, List, Optional
 
 from functools import lru_cache
 
-from docling.document_converter import DocumentConverter, DocumentConverterConfig
-from docling.pipeline.standard_models import load_std_models
+from docling.document_converter import DocumentConverter
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +32,8 @@ class DoclingProcessor:
         if converter is not None:
             self.converter = converter
         else:
-            models = load_std_models()
-            config = DocumentConverterConfig(
-                ocr_text_detection_enabled=True,
-                ocr_output_type="text",
-                pipeline_components=["pdf", "docx", "pptx", "audio"],
-            )
-            self.converter = DocumentConverter(models=models, config=config)
-        logger.info("Docling processor initialised with components: %s", self.converter.config.pipeline_components)
+            self.converter = DocumentConverter()
+        logger.info("Docling processor initialised")
 
     def process_pdf(self, file_path: str | Path) -> List[Chunk]:
         """
@@ -84,6 +77,31 @@ class DoclingProcessor:
                         "segment_index": idx,
                         "timestamp": segment.metadata.get("timecodes"),
                         "source_url": source_url,
+                    },
+                )
+            )
+        logger.info("Docling produced %s transcript segments", len(chunks))
+        return chunks
+
+    def process_audio_path(self, audio_path: str | Path, *, source_url: str | None = None) -> List[Chunk]:
+        """
+        Convert audio from a filesystem path to transcript chunks.
+        """
+        path = Path(audio_path)
+        logger.info("Processing audio via Docling from path=%s (source=%s)", path, source_url)
+        result = self.converter.convert(path)
+
+        chunks: List[Chunk] = []
+        for idx, segment in enumerate(result.document.sections):
+            chunks.append(
+                Chunk(
+                    text=segment.text,
+                    metadata={
+                        "source_type": "podcast",
+                        "segment_index": idx,
+                        "timestamp": segment.metadata.get("timecodes"),
+                        "source_url": source_url,
+                        "filename": path.name,
                     },
                 )
             )

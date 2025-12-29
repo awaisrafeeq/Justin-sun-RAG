@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 
-TEST_FEED_URL = "https://feeds.simplecast.com/54nAGcIl"
+TEST_FEED_URL = "https://lexfridman.com/feed/podcast/"
 
 
 def main():

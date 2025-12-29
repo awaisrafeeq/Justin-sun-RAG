@@ -53,7 +53,9 @@ async def fetch_feed(feed_url: str) -> ParsedFeed:
     validated_url = validate_feed_url(feed_url)
     logger.info("Fetching RSS feed: %s", validated_url)
     parsed = await asyncio.to_thread(feedparser.parse, validated_url)
-    if parsed.bozo:
+    
+    # Check if feed was parsed successfully
+    if not hasattr(parsed, 'version') or not parsed.version:
         raise ValueError(f"Failed to parse RSS feed: {validated_url}")
 
     feed_info = parsed.feed or {}

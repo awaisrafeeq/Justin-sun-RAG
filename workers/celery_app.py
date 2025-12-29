@@ -18,6 +18,6 @@ celery_app.conf.update(
     timezone="UTC",
     task_routes={
         "workers.tasks.process_pdf": {"queue": "ingestion"},
-        "workers.tasks.process_audio": {"queue": "ingestion"},
+        "workers.tasks.process_episode": {"queue": "ingestion"},
     },
 )

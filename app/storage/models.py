@@ -70,6 +70,8 @@ class Episode(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(
         String(32), default="pending", nullable=False
     )  # pending/processing/completed/failed
+    transcript_text: Mapped[Optional[str]] = mapped_column(Text)
+    transcript_segments: Mapped[Optional[dict]] = mapped_column(JSON)
     chunk_ids: Mapped[Optional[List[str]]] = mapped_column(ARRAY(String))
     processed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     has_errors: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
