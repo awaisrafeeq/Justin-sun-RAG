@@ -1,0 +1,6 @@
+HTTP/1.1 307 Temporary Redirect
+date: Tue, 30 Dec 2025 13:40:47 GMT
+server: uvicorn
+content-length: 0
+location: http://127.0.0.1:8000/api/feeds
+

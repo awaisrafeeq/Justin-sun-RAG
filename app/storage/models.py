@@ -5,14 +5,15 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import (
-    JSON,
-    TIMESTAMP,
     Boolean,
+    String,
+    Text,
+    TIMESTAMP,
+    ARRAY,
     Column,
     ForeignKey,
     Integer,
-    String,
-    Text,
+    JSON,
     UniqueConstraint,
     func,
 )

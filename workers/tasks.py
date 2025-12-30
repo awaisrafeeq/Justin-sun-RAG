@@ -11,8 +11,11 @@ from celery import shared_task
 
 from app.ingestion.audio_processor import AudioDownloadError, download_audio_to_tempfile
 from app.ingestion.docling_client import get_docling_processor
-from app.storage.database import AsyncSessionLocal
+from app.ingestion.chunker import TranscriptChunker
+from app.ingestion.embedding_processor import EmbeddingProcessor
+from app.storage.vector_store import VectorStore
 from app.storage.models import Episode
+from app.storage.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +39,15 @@ def process_pdf_task(file_path: str) -> dict:
     retry_kwargs={"max_retries": 3},
 )
 def process_episode_task(self, episode_id: str) -> dict:
-    """
-    Download podcast audio, run Docling transcription, update episode status.
-    """
+    """Process episode: download audio → transcribe → chunk → embed → store."""
+    return _run_process_episode(episode_id)
 
+
+def _run_process_episode(episode_id: str) -> dict:
+    """Synchronous wrapper for async processing."""
+    episode_uuid = uuid.UUID(episode_id)
+    
     async def _run() -> dict:
-        episode_uuid = uuid.UUID(episode_id)
         async with AsyncSessionLocal() as session:
             episode = await session.get(Episode, episode_uuid)
             if not episode:
@@ -54,30 +60,68 @@ def process_episode_task(self, episode_id: str) -> dict:
             await session.commit()
 
             try:
+                # Step 1: Download and transcribe audio
                 processor = get_docling_processor()
                 with download_audio_to_tempfile(episode.audio_url, suffix=Path(episode.audio_url).suffix or ".audio") as audio_path:
-                    chunks = processor.process_audio_path(audio_path, source_url=episode.audio_url)
+                    transcript_segments = processor.process_audio_path(audio_path, source_url=episode.audio_url)
 
+                # Store transcript
                 episode.transcript_segments = [
                     {
-                        "text": c.text,
-                        "metadata": c.metadata,
+                        "text": segment.text,
+                        "metadata": segment.metadata,
                     }
-                    for c in chunks
+                    for segment in transcript_segments
                 ]
-                episode.transcript_text = "\n\n".join([c.text for c in chunks if c.text])
+                episode.transcript_text = "\n\n".join([segment.text for segment in transcript_segments if segment.text])
+                await session.commit()
+
+                # Step 2: Chunk transcript
+                chunker = TranscriptChunker(max_chunk_size=1000, overlap=100, chunk_by="tokens")
+                chunks = chunker.chunk_transcript(episode.transcript_segments)
+
+                # Step 3: Generate embeddings
+                embedding_processor = EmbeddingProcessor(batch_size=50)
+                embeddings = await embedding_processor.process_chunks(chunks)
+
+                # Step 4: Store in vector database
+                vector_store = VectorStore()
+                chunk_ids = await vector_store.store_chunks(
+                    chunks=chunks,
+                    embeddings=embeddings,
+                    episode_id=episode_id,
+                    metadata={
+                        "episode_title": episode.title,
+                        "feed_id": str(episode.feed_id),
+                        "published_at": episode.published_at.isoformat() if episode.published_at else None
+                    }
+                )
+
+                # Step 5: Update episode with chunk IDs
+                episode.chunk_ids = chunk_ids
                 episode.status = "completed"
                 episode.processed_at = datetime.now(timezone.utc)
                 episode.has_errors = False
                 await session.commit()
 
-                logger.info("Episode %s transcribed into %s chunks", episode_id, len(chunks))
-                return {"episode_id": episode_id, "chunks": len(chunks)}
-            except Exception:
+                logger.info(
+                    "Episode %s processed: %d transcript segments → %d chunks → %d embeddings stored",
+                    episode_id, len(transcript_segments), len(chunks), len(chunk_ids)
+                )
+                return {
+                    "episode_id": episode_id,
+                    "transcript_segments": len(transcript_segments),
+                    "chunks": len(chunks),
+                    "embeddings": len(chunk_ids)
+                }
+            except Exception as e:
+                # Update episode status to failed
                 episode.status = "failed"
                 episode.has_errors = True
                 episode.processed_at = datetime.now(timezone.utc)
                 await session.commit()
+                
+                logger.error(f"Episode {episode_id} processing failed: {e}")
                 raise
 
     return asyncio.run(_run())

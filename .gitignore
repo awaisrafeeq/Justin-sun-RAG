@@ -26,5 +26,5 @@ Thumbs.db
 .DS_Store
 
 # Project files
-*.md
+# *.md
 test_manual.py

@@ -6,9 +6,10 @@ from app.config import settings
 
 celery_app = Celery(
     "rag_workers",
-    broker=settings.redis_url,
-    backend=settings.redis_url,
+    broker="redis://localhost:6379/0",
+    backend="redis://localhost:6379/0",
     include=["workers.tasks"],
+    broker_connection_retry_on_startup=True,
 )
 
 celery_app.conf.update(
@@ -18,6 +19,9 @@ celery_app.conf.update(
     timezone="UTC",
     task_routes={
         "workers.tasks.process_pdf": {"queue": "ingestion"},
-        "workers.tasks.process_episode": {"queue": "ingestion"},
+        "workers.tasks.process_episode": {"queue": "processing"},
     },
+    worker_prefetch_multiplier=1,
+    task_acks_late=True,
+    worker_disable_rate_limits=False,
 )
