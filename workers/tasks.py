@@ -14,21 +14,35 @@ from app.ingestion.docling_client import get_docling_processor
 from app.ingestion.chunker import TranscriptChunker
 from app.ingestion.embedding_processor import EmbeddingProcessor
 from app.storage.vector_store import VectorStore
-from app.storage.models import Episode
+from app.storage.models import Episode, Document
 from app.storage.database import AsyncSessionLocal
+from app.services.pdf_processor import PDFProcessor
 
 logger = logging.getLogger(__name__)
 
 
-@shared_task(name="workers.tasks.process_pdf")
-def process_pdf_task(file_path: str) -> dict:
-    """
-    Convert a PDF into chunks via Docling and return summary stats.
-    """
-    processor = get_docling_processor()
-    chunks = processor.process_pdf(Path(file_path))
-    logger.info("Processed PDF %s into %s chunks", file_path, len(chunks))
-    return {"filename": Path(file_path).name, "chunks": len(chunks)}
+@shared_task(
+    bind=True,
+    name="workers.tasks.process_pdf",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 3},
+)
+def process_pdf_task(
+    self,
+    document_id: str,
+    file_content: bytes = None,
+    filename: str = None,
+    original_filename: str = None,
+    mime_type: str = None,
+    processing_options: dict = None,
+    reprocess: bool = False
+) -> dict:
+    """Process PDF document with Docling and store in vector database."""
+    return _run_process_pdf(
+        document_id, file_content, filename, original_filename, 
+        mime_type, processing_options, reprocess
+    )
 
 
 @shared_task(
@@ -43,8 +57,92 @@ def process_episode_task(self, episode_id: str) -> dict:
     return _run_process_episode(episode_id)
 
 
+def _run_process_pdf(
+    document_id: str,
+    file_content: bytes = None,
+    filename: str = None,
+    original_filename: str = None,
+    mime_type: str = None,
+    processing_options: dict = None,
+    reprocess: bool = False
+) -> dict:
+    """Synchronous wrapper for PDF processing."""
+    document_uuid = uuid.UUID(document_id)
+    
+    async def _run() -> dict:
+        async with AsyncSessionLocal() as session:
+            document = await session.get(Document, document_uuid)
+            if not document:
+                raise ValueError(f"Document {document_id} not found")
+            
+            # Update status to processing
+            document.status = "processing"
+            document.has_errors = False
+            document.error_message = None
+            await session.commit()
+            
+            try:
+                # Get file content if not provided (reprocessing)
+                if not file_content and not reprocess:
+                    raise ValueError("File content is required for new documents")
+                
+                # Initialize processor
+                processor = PDFProcessor()
+                
+                # Process PDF
+                result = await processor.process_pdf(
+                    file_content=file_content,
+                    filename=filename or document.filename,
+                    original_filename=original_filename or document.original_filename,
+                    mime_type=mime_type or document.mime_type,
+                    processing_options=processing_options
+                )
+                
+                # Update document with results
+                document.status = "completed"
+                document.processed_at = datetime.now(timezone.utc)
+                document.page_count = result.page_count
+                document.table_count = result.table_count
+                document.image_count = result.image_count
+                document.chunk_ids = result.chunk_ids if hasattr(result, 'chunk_ids') else []
+                
+                # Extract text from chunks
+                if result.chunks:
+                    document.extracted_text = " ".join([chunk.text for chunk in result.chunks])
+                
+                await session.commit()
+                
+                logger.info(
+                    "Document %s processed: %d pages, %d chunks, %d tables, %d images",
+                    document_id, result.page_count, result.chunk_count, 
+                    result.table_count, result.image_count
+                )
+                
+                return {
+                    "document_id": document_id,
+                    "status": "completed",
+                    "page_count": result.page_count,
+                    "chunk_count": result.chunk_count,
+                    "table_count": result.table_count,
+                    "image_count": result.image_count,
+                    "processing_time": result.processing_time
+                }
+                
+            except Exception as e:
+                # Update document status to failed
+                document.status = "failed"
+                document.has_errors = True
+                document.error_message = str(e)
+                document.processed_at = datetime.now(timezone.utc)
+                await session.commit()
+                
+                logger.error(f"Document {document_id} processing failed: {e}")
+                raise
+    
+    return asyncio.run(_run())
+
+
 def _run_process_episode(episode_id: str) -> dict:
-    """Synchronous wrapper for async processing."""
     episode_uuid = uuid.UUID(episode_id)
     
     async def _run() -> dict:
