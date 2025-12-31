@@ -13,12 +13,16 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = '0004'
-down_revision: Union[str, None] = '0003'
+down_revision: Union[str, None] = '0003_episode_chunk_ids'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if inspector.has_table('documents'):
+        return
     # Create documents table
     op.create_table('documents',
         sa.Column('id', sa.UUID(), nullable=False),
@@ -55,6 +59,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table('documents'):
+        return
     # Drop indexes
     op.drop_index(op.f('ix_documents_processed_at'), table_name='documents')
     op.drop_index(op.f('ix_documents_created_at'), table_name='documents')

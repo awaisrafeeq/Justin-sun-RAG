@@ -36,47 +36,44 @@ async def check_day7_results():
         for status, count in status_counts.all():
             print(f"  - {status}: {count}")
         
-        # 4. Check episodes with errors
+        # 4. Check episodes with errors (using status)
         error_episodes = await session.scalar(
             select(func.count(Episode.id))
-            .where(Episode.has_errors == True)
+            .where(Episode.status == "failed")
         )
         print(f"\n❌ Episodes with Errors: {error_episodes}")
         
-        # 5. Check processed episodes (with chunk_ids)
+        # 5. Check processed episodes (with status = completed)
         processed_episodes = await session.scalar(
             select(func.count(Episode.id))
-            .where(Episode.chunk_ids.isnot(None))
+            .where(Episode.status == "completed")
         )
-        print(f"✅ Processed Episodes (with chunks): {processed_episodes}")
+        print(f"✅ Processed Episodes (completed): {processed_episodes}")
         
         # 6. Check recent episodes
         recent_episodes = await session.execute(
-            select(Episode)
+            select(Episode.id, Episode.title, Episode.status, Episode.created_at)
             .order_by(Episode.created_at.desc())
             .limit(5)
         )
         
         print("\n📋 Recent Episodes:")
-        for ep in recent_episodes.scalars().all():
-            print(f"  - {ep.title[:50]}... ({ep.status})")
+        for ep_id, ep_title, ep_status, ep_created in recent_episodes.all():
+            print(f"  - {ep_title[:50]}... ({ep_status})")
         
         # 7. Check feeds with episode counts
         feed_stats = await session.execute(
             select(
-                RSSFeed.feed_title,
-                RSSFeed.total_episodes,
                 func.count(Episode.id).label("actual_episodes")
             )
-            .outerjoin(Episode, RSSFeed.id == Episode.feed_id)
-            .group_by(RSSFeed.id, RSSFeed.feed_title, RSSFeed.total_episodes)
+            .join(RSSFeed, RSSFeed.id == Episode.feed_id)
+            .group_by(RSSFeed.id)
             .limit(5)
         )
         
         print("\n📈 Feed Statistics:")
-        for title, total, actual in feed_stats.all():
-            completion = round((actual / total * 100) if total > 0 else 0, 1)
-            print(f"  - {title[:40]}...: {actual}/{total} ({completion}%)")
+        for actual, in feed_stats.all():
+            print(f"  - Feed: {actual} episodes")
         
         # 8. Check Day 7 specific features
         print("\n🎯 Day 7 Features Status:")

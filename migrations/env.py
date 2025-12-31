@@ -10,7 +10,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from app.config import settings  # noqa: E402
-from app.storage.models import Base  # noqa: E402
+from app.storage.database import Base  # noqa: E402
 
 config = context.config
 fileConfig(config.config_file_name)

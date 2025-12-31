@@ -19,10 +19,9 @@ async def test_day8_complete():
         async with AsyncSessionLocal() as session:
             doc = Document(
                 filename="test.pdf",
-                original_filename="test.pdf",
                 file_hash="test_hash_12345",
-                file_size=123,
-                mime_type="application/pdf",
+                doc_type="pdf",
+                extracted_name="Test Document",
                 status="pending"
             )
             session.add(doc)
@@ -55,14 +54,11 @@ async def test_day8_complete():
             for status, count in status_counts.fetchall():
                 print(f"   - {status}: {count}")
             
-            # Count by type (skip if doc_type column doesn't exist)
-            try:
-                type_counts = await session.execute(text("SELECT doc_type, COUNT(*) FROM documents GROUP BY doc_type"))
-                print(f"📄 Documents by type:")
-                for doc_type, count in type_counts.fetchall():
-                    print(f"   - {doc_type}: {count}")
-            except Exception as e:
-                print(f"📄 Document type query skipped (column may not exist): {e}")
+            # Count by type
+            type_counts = await session.execute(text("SELECT doc_type, COUNT(*) FROM documents GROUP BY doc_type"))
+            print(f"📄 Documents by type:")
+            for doc_type, count in type_counts.fetchall():
+                print(f"   - {doc_type}: {count}")
             
         print("\n🎯 Day 8 Features Status:")
         print("✅ Document Model: Working")

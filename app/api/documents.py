@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID, uuid4
 
@@ -31,6 +32,7 @@ async def upload_pdf(
     extract_tables: bool = Form(True),
     extract_images: bool = Form(True),
     ocr_images: bool = Form(True),
+    reprocess_existing: bool = Form(False),
     chunk_size: int = Form(1000),
     chunk_overlap: int = Form(100),
     db: AsyncSession = Depends(get_db)
@@ -60,11 +62,50 @@ async def upload_pdf(
     existing_doc = await db.execute(
         select(Document).where(Document.file_hash == file_hash)
     )
-    if existing_doc.scalar_one_or_none():
-        raise HTTPException(
-            status_code=409,
-            detail="Document with this content already exists"
+    existing_document = existing_doc.scalar_one_or_none()
+    if existing_document:
+        if not reprocess_existing:
+            raise HTTPException(
+                status_code=409,
+                detail="Document with this content already exists"
+            )
+
+        if existing_document.status == "processing":
+            raise HTTPException(
+                status_code=409,
+                detail="Document is already being processed"
+            )
+
+        existing_document.status = "pending"
+        existing_document.has_errors = False
+        existing_document.error_message = None
+        await db.commit()
+
+        processing_options = {
+            "extract_tables": extract_tables,
+            "extract_images": extract_images,
+            "ocr_images": ocr_images,
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+        }
+
+        task = process_pdf_task.delay(
+            document_id=str(existing_document.id),
+            file_content=file_content,
+            filename=existing_document.filename,
+            original_filename=existing_document.original_filename,
+            mime_type=existing_document.mime_type,
+            processing_options=processing_options,
+            reprocess=True,
         )
+        logger.info(
+            "Existing PDF %s re-queued for processing (task: %s)",
+            existing_document.filename,
+            task.id,
+        )
+
+        await db.refresh(existing_document)
+        return existing_document
     
     # Create document record
     document = Document(
@@ -171,16 +212,23 @@ async def process_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
+    # Allow manual reset if stuck in processing for more than 5 minutes
     if document.status == "processing":
-        raise HTTPException(
-            status_code=409,
-            detail="Document is already being processed"
-        )
+        # Check if it's been stuck for a while (allow manual override)
+        if document.processed_at and (datetime.now(timezone.utc) - document.processed_at).total_seconds() > 300:
+            # Stuck for over 5 minutes, allow reset
+            logger.warning(f"Document {document_id} stuck in processing for over 5 minutes, allowing manual reset")
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="Document is already being processed"
+            )
     
     # Reset document status
     document.status = "pending"
     document.has_errors = False
     document.error_message = None
+    document.processed_at = None
     await db.commit()
     
     # Queue for processing

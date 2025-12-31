@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, LargeBinary
+from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, LargeBinary, JSON
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 from datetime import datetime
@@ -17,6 +17,9 @@ class Document(Base):
     has_errors = Column(Boolean, default=False)
     error_message = Column(Text, nullable=True)
     extracted_text = Column(Text, nullable=True)
+    doc_type = Column(String(64), nullable=True)
+    extracted_name = Column(String(256), nullable=True)
+    extracted_metadata = Column(JSON, nullable=True)
     table_count = Column(Integer, default=0)
     image_count = Column(Integer, default=0)
     page_count = Column(Integer, default=0)

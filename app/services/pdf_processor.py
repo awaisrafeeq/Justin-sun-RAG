@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import tempfile
+import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID
@@ -70,7 +71,65 @@ class PDFProcessor:
             try:
                 # Process with Docling
                 logger.info(f"Processing PDF: {filename}")
-                chunks = self.docling_processor.process_pdf(Path(tmp_file_path))
+                try:
+                    chunks = self.docling_processor.process_pdf(Path(tmp_file_path))
+                except Exception as e:
+                    extracted_text = self._extract_text_fallback(file_content)
+                    if not extracted_text:
+                        raise
+                    logger.warning(
+                        "Docling failed (%s). Falling back to pypdf text extraction for %s",
+                        e,
+                        filename,
+                    )
+                    text_chunks = self._chunk_plain_text(extracted_text, options)
+                    embeddings = await self.embedding_processor.process_chunks(text_chunks)
+                    chunk_ids = await self.vector_store.store_chunks(
+                        chunks=text_chunks,
+                        embeddings=embeddings,
+                        episode_id=str(UUID(int=0)),
+                        metadata={
+                            "document_type": "pdf",
+                            "filename": filename,
+                            "original_filename": original_filename,
+                            "page_count": 0,
+                            "table_count": 0,
+                            "image_count": 0,
+                            "has_text": True,
+                            "has_tables": False,
+                            "has_images": False,
+                            "extraction_method": "pypdf_fallback",
+                        },
+                    )
+
+                    processing_time = time.time() - start_time
+                    result = DocumentProcessingResult(
+                        document_id=UUID(int=0),
+                        status="completed",
+                        page_count=0,
+                        text_length=len(extracted_text),
+                        table_count=0,
+                        image_count=0,
+                        chunk_count=len(text_chunks),
+                        processing_time=processing_time,
+                        chunks=[
+                            DocumentChunk(
+                                chunk_id=chunk_ids[i],
+                                chunk_index=i,
+                                text=text_chunks[i].text,
+                                page_number=text_chunks[i].metadata.get("page_number"),
+                                chunk_type=text_chunks[i].metadata.get("chunk_type", "text"),
+                                metadata=text_chunks[i].metadata,
+                            )
+                            for i in range(len(text_chunks))
+                        ],
+                    )
+                    logger.info(
+                        "PDF processing complete via fallback: %d chunks, %.2fs",
+                        len(text_chunks),
+                        processing_time,
+                    )
+                    return result
                 
                 # Extract metadata
                 metadata = self._extract_pdf_metadata(chunks)
@@ -124,7 +183,16 @@ class PDFProcessor:
                 
             finally:
                 # Clean up temporary file
-                Path(tmp_file_path).unlink(missing_ok=True)
+                tmp_path = Path(tmp_file_path)
+                for attempt in range(6):
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                        break
+                    except PermissionError as e:
+                        if attempt == 5:
+                            logger.warning("Failed to delete temp PDF %s due to file lock: %s", tmp_path, e)
+                            break
+                        time.sleep(0.2 * (attempt + 1))
                 
         except Exception as e:
             logger.error(f"PDF processing failed: {e}")
@@ -198,6 +266,58 @@ class PDFProcessor:
                 ))
         
         return text_chunks
+
+    def _extract_text_fallback(self, file_content: bytes) -> str:
+        try:
+            from pypdf import PdfReader
+        except Exception:
+            return ""
+
+        try:
+            import io
+
+            reader = PdfReader(io.BytesIO(file_content))
+            pages_text = []
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    pages_text.append(page_text)
+            return "\n\n".join(pages_text).strip()
+        except Exception:
+            return ""
+
+    def _chunk_plain_text(self, text: str, options: Dict[str, Any]) -> List[Chunk]:
+        chunk_size = int(options.get("chunk_size", 1000))
+        chunk_overlap = int(options.get("chunk_overlap", 100))
+
+        if not text:
+            return []
+
+        approx_chars = max(chunk_size * 4, 1)
+        overlap_chars = max(chunk_overlap, 0)
+
+        chunks: List[Chunk] = []
+        start = 0
+        idx = 0
+        while start < len(text):
+            end = min(start + approx_chars, len(text))
+            chunk_text = text[start:end].strip()
+            if chunk_text:
+                chunks.append(
+                    Chunk(
+                        text=chunk_text,
+                        metadata={
+                            "chunk_index": idx,
+                            "chunk_type": "text",
+                            "page_number": None,
+                        },
+                    )
+                )
+                idx += 1
+            if end >= len(text):
+                break
+            start = max(end - overlap_chars, start + 1)
+        return chunks
     
     @staticmethod
     def calculate_file_hash(file_content: bytes) -> str:

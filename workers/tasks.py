@@ -14,9 +14,11 @@ from app.ingestion.docling_client import get_docling_processor
 from app.ingestion.chunker import TranscriptChunker
 from app.ingestion.embedding_processor import EmbeddingProcessor
 from app.storage.vector_store import VectorStore
-from app.storage.models import Episode, Document
+from app.storage.models import Episode
+from app.storage.models.document import Document
 from app.storage.database import AsyncSessionLocal
 from app.services.pdf_processor import PDFProcessor
+from app.services.document_metadata import DocumentMetadataService
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +26,7 @@ logger = logging.getLogger(__name__)
 @shared_task(
     bind=True,
     name="workers.tasks.process_pdf",
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_kwargs={"max_retries": 3},
+    autoretry_for=(),
 )
 def process_pdf_task(
     self,
@@ -85,7 +85,62 @@ def _run_process_pdf(
                 # Get file content if not provided (reprocessing)
                 if not file_content and not reprocess:
                     raise ValueError("File content is required for new documents")
-                
+
+                # Reprocess mode may not have access to original PDF bytes.
+                # If we already have extracted_text, we can still run Day 9 metadata extraction.
+                if reprocess and not file_content and document.extracted_text:
+                    metadata_service = DocumentMetadataService()
+                    meta_result = await metadata_service.classify_and_extract(
+                        text=document.extracted_text,
+                        filename=document.original_filename,
+                    )
+                    document.doc_type = meta_result.doc_type
+                    document.extracted_name = meta_result.extracted_name
+                    document.extracted_metadata = meta_result.extracted_metadata
+                    document.status = "completed"
+                    document.processed_at = datetime.now(timezone.utc)
+                    await session.commit()
+
+                    logger.info(
+                        "Document %s metadata re-extracted (no PDF bytes available)",
+                        document_id,
+                    )
+
+                    return {
+                        "document_id": document_id,
+                        "status": "completed",
+                        "page_count": document.page_count or 0,
+                        "chunk_count": 0,
+                        "table_count": document.table_count or 0,
+                        "image_count": document.image_count or 0,
+                        "processing_time": 0,
+                    }
+
+                # If reprocessing and we have neither the original bytes nor extracted text,
+                # we cannot proceed. Fail the job without triggering Celery autoretry loops.
+                if reprocess and not file_content and not document.extracted_text:
+                    document.status = "failed"
+                    document.has_errors = True
+                    document.error_message = (
+                        "Cannot reprocess: no stored PDF bytes available and extracted_text is empty. "
+                        "Re-upload the PDF with reprocess_existing=true to re-queue using fresh bytes."
+                    )
+                    document.processed_at = datetime.now(timezone.utc)
+                    await session.commit()
+                    logger.error(
+                        "Document %s reprocess failed: missing bytes and extracted_text",
+                        document_id,
+                    )
+                    return {
+                        "document_id": document_id,
+                        "status": "failed",
+                        "page_count": 0,
+                        "chunk_count": 0,
+                        "table_count": 0,
+                        "image_count": 0,
+                        "processing_time": 0,
+                    }
+
                 # Initialize processor
                 processor = PDFProcessor()
                 
@@ -104,12 +159,27 @@ def _run_process_pdf(
                 document.page_count = result.page_count
                 document.table_count = result.table_count
                 document.image_count = result.image_count
-                document.chunk_ids = result.chunk_ids if hasattr(result, 'chunk_ids') else []
+                chunk_ids = getattr(result, 'chunk_ids', None)
+                if isinstance(chunk_ids, list):
+                    import json
+                    document.chunk_ids = json.dumps(chunk_ids).encode('utf-8')
+                else:
+                    document.chunk_ids = chunk_ids or b""
                 
                 # Extract text from chunks
                 if result.chunks:
                     document.extracted_text = " ".join([chunk.text for chunk in result.chunks])
-                
+
+                if document.extracted_text:
+                    metadata_service = DocumentMetadataService()
+                    meta_result = await metadata_service.classify_and_extract(
+                        text=document.extracted_text,
+                        filename=document.original_filename,
+                    )
+                    document.doc_type = meta_result.doc_type
+                    document.extracted_name = meta_result.extracted_name
+                    document.extracted_metadata = meta_result.extracted_metadata
+
                 await session.commit()
                 
                 logger.info(

@@ -19,8 +19,18 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {col["name"] for col in inspector.get_columns("episodes")}
+    if "chunk_ids" in columns:
+        return
     op.add_column("episodes", sa.Column("chunk_ids", sa.ARRAY(sa.String())))
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {col["name"] for col in inspector.get_columns("episodes")}
+    if "chunk_ids" not in columns:
+        return
     op.drop_column("episodes", "chunk_ids")

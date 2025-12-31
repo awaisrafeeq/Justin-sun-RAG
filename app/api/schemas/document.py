@@ -24,6 +24,9 @@ class DocumentResponse(BaseModel):
     has_errors: bool
     error_message: Optional[str] = None
     extracted_text: Optional[str] = None
+    doc_type: Optional[str] = None
+    extracted_name: Optional[str] = None
+    extracted_metadata: Optional[dict] = None
     table_count: int = 0
     image_count: int = 0
     page_count: int = 0
@@ -35,7 +38,7 @@ class DocumentResponse(BaseModel):
     processed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
-    chunk_ids: Optional[List[str]] = None
+    chunk_ids: Optional[bytes] = None
     
     class Config:
         from_attributes = True
@@ -48,6 +51,8 @@ class DocumentSummary(BaseModel):
     original_filename: str
     status: str
     file_size: int
+    doc_type: Optional[str] = None
+    extracted_name: Optional[str] = None
     page_count: int = 0
     table_count: int = 0
     image_count: int = 0
