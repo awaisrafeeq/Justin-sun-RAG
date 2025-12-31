@@ -33,7 +33,9 @@ class PDFProcessor:
         filename: str,
         original_filename: str,
         mime_type: str,
-        processing_options: Optional[Dict[str, Any]] = None
+        processing_options: Optional[Dict[str, Any]] = None,
+        document_metadata: Optional[Dict[str, Any]] = None,
+        document_id: Optional[str] = None
     ) -> DocumentProcessingResult:
         """
         Process PDF document end-to-end.
@@ -82,12 +84,12 @@ class PDFProcessor:
                         e,
                         filename,
                     )
-                    text_chunks = self._chunk_plain_text(extracted_text, options)
+                    text_chunks = self._chunk_plain_text(extracted_text, options, document_metadata)
                     embeddings = await self.embedding_processor.process_chunks(text_chunks)
                     chunk_ids = await self.vector_store.store_chunks(
                         chunks=text_chunks,
                         embeddings=embeddings,
-                        episode_id=str(UUID(int=0)),
+                        document_id=document_id or str(UUID(int=0)),
                         metadata={
                             "document_type": "pdf",
                             "filename": filename,
@@ -135,7 +137,7 @@ class PDFProcessor:
                 metadata = self._extract_pdf_metadata(chunks)
                 
                 # Create text chunks
-                text_chunks = self._create_text_chunks(chunks, options)
+                text_chunks = self._create_text_chunks(chunks, options, document_metadata)
                 
                 # Generate embeddings
                 embeddings = await self.embedding_processor.process_chunks(text_chunks)
@@ -144,7 +146,7 @@ class PDFProcessor:
                 chunk_ids = await self.vector_store.store_chunks(
                     chunks=text_chunks,
                     embeddings=embeddings,
-                    episode_id=str(UUID(int=0)),  # Use dummy episode_id for documents
+                    document_id=document_id or str(UUID(int=0)),  # Use provided ID or fallback
                     metadata={
                         "document_type": "pdf",
                         "filename": filename,
@@ -230,18 +232,25 @@ class PDFProcessor:
         metadata["page_count"] = len(page_numbers)
         return metadata
     
-    def _create_text_chunks(self, docling_chunks: List[Any], options: Dict[str, Any]) -> List[Chunk]:
-        """Create text chunks from Docling output."""
+    def _create_text_chunks(self, docling_chunks: List[Any], options: Dict[str, Any], document_metadata: Optional[Dict[str, Any]] = None) -> List[Chunk]:
+        """Create text chunks from Docling output with rich metadata."""
         text_chunks = []
         
         for i, docling_chunk in enumerate(docling_chunks):
-            # Convert Docling chunk to our Chunk format
-            chunk_text = ""
+            # Base metadata
             chunk_metadata = {
                 "chunk_index": i,
                 "chunk_type": "text",
-                "page_number": None
+                "page_number": None,
+                "source_type": "document",
             }
+            
+            # Add document-level metadata if available
+            if document_metadata:
+                if document_metadata.get("doc_type"):
+                    chunk_metadata["doc_type"] = document_metadata["doc_type"]
+                if document_metadata.get("extracted_name"):
+                    chunk_metadata["extracted_name"] = document_metadata["extracted_name"]
             
             # Extract text based on chunk type
             if hasattr(docling_chunk, 'text'):
@@ -251,12 +260,18 @@ class PDFProcessor:
             else:
                 chunk_text = str(docling_chunk)
             
-            # Extract metadata
+            # Extract metadata from Docling chunk
             if hasattr(docling_chunk, 'page_number'):
                 chunk_metadata["page_number"] = docling_chunk.page_number
             
             if hasattr(docling_chunk, 'type'):
                 chunk_metadata["chunk_type"] = docling_chunk.type
+            
+            # Add section detection for document chunks
+            if chunk_text.strip():
+                section = self._detect_section(chunk_text, document_metadata.get("doc_type") if document_metadata else None)
+                if section:
+                    chunk_metadata["section"] = section
             
             # Only add non-empty chunks
             if chunk_text.strip():
@@ -286,7 +301,7 @@ class PDFProcessor:
         except Exception:
             return ""
 
-    def _chunk_plain_text(self, text: str, options: Dict[str, Any]) -> List[Chunk]:
+    def _chunk_plain_text(self, text: str, options: Dict[str, Any], document_metadata: Optional[Dict[str, Any]] = None) -> List[Chunk]:
         chunk_size = int(options.get("chunk_size", 1000))
         chunk_overlap = int(options.get("chunk_overlap", 100))
 
@@ -303,14 +318,29 @@ class PDFProcessor:
             end = min(start + approx_chars, len(text))
             chunk_text = text[start:end].strip()
             if chunk_text:
+                # Base metadata
+                chunk_metadata = {
+                    "chunk_index": idx,
+                    "chunk_type": "text",
+                    "page_number": None,
+                    "source_type": "document",
+                }
+                
+                # Add document-level metadata if available
+                if document_metadata:
+                    if document_metadata.get("doc_type"):
+                        chunk_metadata["doc_type"] = document_metadata["doc_type"]
+                    if document_metadata.get("extracted_name"):
+                        chunk_metadata["extracted_name"] = document_metadata["extracted_name"]
+                    # Add section detection based on content heuristics
+                    section = self._detect_section(chunk_text, document_metadata.get("doc_type"))
+                    if section:
+                        chunk_metadata["section"] = section
+                
                 chunks.append(
                     Chunk(
                         text=chunk_text,
-                        metadata={
-                            "chunk_index": idx,
-                            "chunk_type": "text",
-                            "page_number": None,
-                        },
+                        metadata=chunk_metadata
                     )
                 )
                 idx += 1
@@ -318,6 +348,44 @@ class PDFProcessor:
                 break
             start = max(end - overlap_chars, start + 1)
         return chunks
+    
+    def _detect_section(self, text: str, doc_type: Optional[str] = None) -> Optional[str]:
+        """Detect document section based on content heuristics."""
+        text_lower = text.lower().strip()
+        
+        # CV-specific sections
+        if doc_type == "cv":
+            if any(keyword in text_lower for keyword in ["experience", "work history", "employment"]):
+                return "experience"
+            elif any(keyword in text_lower for keyword in ["education", "academic", "university", "college"]):
+                return "education"
+            elif any(keyword in text_lower for keyword in ["skills", "technical", "competencies", "expertise"]):
+                return "skills"
+            elif any(keyword in text_lower for keyword in ["contact", "phone", "email", "address"]):
+                return "contact"
+            elif any(keyword in text_lower for keyword in ["summary", "objective", "profile", "about"]):
+                return "summary"
+        
+        # Report/Article sections
+        elif doc_type in ["report", "article"]:
+            if any(keyword in text_lower for keyword in ["abstract", "summary", "executive"]):
+                return "abstract"
+            elif any(keyword in text_lower for keyword in ["introduction", "background", "overview"]):
+                return "introduction"
+            elif any(keyword in text_lower for keyword in ["method", "approach", "procedure"]):
+                return "methodology"
+            elif any(keyword in text_lower for keyword in ["result", "finding", "outcome"]):
+                return "results"
+            elif any(keyword in text_lower for keyword in ["conclusion", "discussion", "recommendation"]):
+                return "conclusion"
+        
+        # Generic section detection
+        if any(keyword in text_lower for keyword in ["chapter", "section"]):
+            return "section"
+        elif len(text.split()) < 50:  # Short text might be a header/title
+            return "header"
+        
+        return None
     
     @staticmethod
     def calculate_file_hash(file_content: bytes) -> str:

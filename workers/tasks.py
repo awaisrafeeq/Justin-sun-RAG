@@ -67,149 +67,182 @@ def _run_process_pdf(
     reprocess: bool = False
 ) -> dict:
     """Synchronous wrapper for PDF processing."""
+    import asyncio
+    
+    # Create new event loop for this task
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        return loop.run_until_complete(
+            _process_pdf_async(
+                document_id, file_content, filename, original_filename,
+                mime_type, processing_options, reprocess
+            )
+        )
+    finally:
+        loop.close()
+
+
+async def _process_pdf_async(
+    document_id: str,
+    file_content: bytes = None,
+    filename: str = None,
+    original_filename: str = None,
+    mime_type: str = None,
+    processing_options: dict = None,
+    reprocess: bool = False
+) -> dict:
+    """Async PDF processing implementation."""
     document_uuid = uuid.UUID(document_id)
     
-    async def _run() -> dict:
-        async with AsyncSessionLocal() as session:
-            document = await session.get(Document, document_uuid)
-            if not document:
-                raise ValueError(f"Document {document_id} not found")
-            
-            # Update status to processing
-            document.status = "processing"
-            document.has_errors = False
-            document.error_message = None
-            await session.commit()
-            
-            try:
-                # Get file content if not provided (reprocessing)
-                if not file_content and not reprocess:
-                    raise ValueError("File content is required for new documents")
+    async with AsyncSessionLocal() as session:
+        document = await session.get(Document, document_uuid)
+        if not document:
+            raise ValueError(f"Document {document_id} not found")
+        
+        # Update status to processing
+        document.status = "processing"
+        document.has_errors = False
+        document.error_message = None
+        await session.commit()
+        
+        try:
+            # Get file content if not provided (reprocessing)
+            if not file_content and not reprocess:
+                raise ValueError("File content is required for new documents")
 
-                # Reprocess mode may not have access to original PDF bytes.
-                # If we already have extracted_text, we can still run Day 9 metadata extraction.
-                if reprocess and not file_content and document.extracted_text:
-                    metadata_service = DocumentMetadataService()
-                    meta_result = await metadata_service.classify_and_extract(
-                        text=document.extracted_text,
-                        filename=document.original_filename,
-                    )
-                    document.doc_type = meta_result.doc_type
-                    document.extracted_name = meta_result.extracted_name
-                    document.extracted_metadata = meta_result.extracted_metadata
-                    document.status = "completed"
-                    document.processed_at = datetime.now(timezone.utc)
-                    await session.commit()
-
-                    logger.info(
-                        "Document %s metadata re-extracted (no PDF bytes available)",
-                        document_id,
-                    )
-
-                    return {
-                        "document_id": document_id,
-                        "status": "completed",
-                        "page_count": document.page_count or 0,
-                        "chunk_count": 0,
-                        "table_count": document.table_count or 0,
-                        "image_count": document.image_count or 0,
-                        "processing_time": 0,
-                    }
-
-                # If reprocessing and we have neither the original bytes nor extracted text,
-                # we cannot proceed. Fail the job without triggering Celery autoretry loops.
-                if reprocess and not file_content and not document.extracted_text:
-                    document.status = "failed"
-                    document.has_errors = True
-                    document.error_message = (
-                        "Cannot reprocess: no stored PDF bytes available and extracted_text is empty. "
-                        "Re-upload the PDF with reprocess_existing=true to re-queue using fresh bytes."
-                    )
-                    document.processed_at = datetime.now(timezone.utc)
-                    await session.commit()
-                    logger.error(
-                        "Document %s reprocess failed: missing bytes and extracted_text",
-                        document_id,
-                    )
-                    return {
-                        "document_id": document_id,
-                        "status": "failed",
-                        "page_count": 0,
-                        "chunk_count": 0,
-                        "table_count": 0,
-                        "image_count": 0,
-                        "processing_time": 0,
-                    }
-
-                # Initialize processor
-                processor = PDFProcessor()
-                
-                # Process PDF
-                result = await processor.process_pdf(
-                    file_content=file_content,
-                    filename=filename or document.filename,
-                    original_filename=original_filename or document.original_filename,
-                    mime_type=mime_type or document.mime_type,
-                    processing_options=processing_options
+            # Reprocess mode may not have access to original PDF bytes.
+            # If we already have extracted_text, we can still run Day 9 metadata extraction.
+            if reprocess and not file_content and document.extracted_text:
+                metadata_service = DocumentMetadataService()
+                meta_result = await metadata_service.classify_and_extract(
+                    text=document.extracted_text,
+                    filename=document.original_filename,
                 )
-                
-                # Update document with results
+                document.doc_type = meta_result.doc_type
+                document.extracted_name = meta_result.extracted_name
+                document.extracted_metadata = meta_result.extracted_metadata
                 document.status = "completed"
                 document.processed_at = datetime.now(timezone.utc)
-                document.page_count = result.page_count
-                document.table_count = result.table_count
-                document.image_count = result.image_count
-                chunk_ids = getattr(result, 'chunk_ids', None)
-                if isinstance(chunk_ids, list):
-                    import json
-                    document.chunk_ids = json.dumps(chunk_ids).encode('utf-8')
-                else:
-                    document.chunk_ids = chunk_ids or b""
-                
-                # Extract text from chunks
-                if result.chunks:
-                    document.extracted_text = " ".join([chunk.text for chunk in result.chunks])
-
-                if document.extracted_text:
-                    metadata_service = DocumentMetadataService()
-                    meta_result = await metadata_service.classify_and_extract(
-                        text=document.extracted_text,
-                        filename=document.original_filename,
-                    )
-                    document.doc_type = meta_result.doc_type
-                    document.extracted_name = meta_result.extracted_name
-                    document.extracted_metadata = meta_result.extracted_metadata
-
                 await session.commit()
-                
+
                 logger.info(
-                    "Document %s processed: %d pages, %d chunks, %d tables, %d images",
-                    document_id, result.page_count, result.chunk_count, 
-                    result.table_count, result.image_count
+                    "Document %s metadata re-extracted (no PDF bytes available)",
+                    document_id,
                 )
-                
+
                 return {
                     "document_id": document_id,
                     "status": "completed",
-                    "page_count": result.page_count,
-                    "chunk_count": result.chunk_count,
-                    "table_count": result.table_count,
-                    "image_count": result.image_count,
-                    "processing_time": result.processing_time
+                    "page_count": document.page_count or 0,
+                    "chunk_count": 0,
+                    "table_count": document.table_count or 0,
+                    "image_count": document.image_count or 0,
+                    "processing_time": 0,
                 }
-                
-            except Exception as e:
-                # Update document status to failed
+
+            # If reprocessing and we have neither the original bytes nor extracted text,
+            # we cannot proceed. Fail the job without triggering Celery autoretry loops.
+            if reprocess and not file_content and not document.extracted_text:
                 document.status = "failed"
                 document.has_errors = True
-                document.error_message = str(e)
+                document.error_message = (
+                    "Cannot reprocess: no stored PDF bytes available and extracted_text is empty. "
+                    "Re-upload the PDF with reprocess_existing=true to re-queue using fresh bytes."
+                )
                 document.processed_at = datetime.now(timezone.utc)
                 await session.commit()
-                
-                logger.error(f"Document {document_id} processing failed: {e}")
-                raise
-    
-    return asyncio.run(_run())
+                logger.error(
+                    "Document %s reprocess failed: missing bytes and extracted_text",
+                    document_id,
+                )
+                return {
+                    "document_id": document_id,
+                    "status": "failed",
+                    "page_count": 0,
+                    "chunk_count": 0,
+                    "table_count": 0,
+                    "image_count": 0,
+                    "processing_time": 0,
+                }
+
+            # Initialize processor
+            processor = PDFProcessor()
+            
+            # Prepare document metadata for chunking
+            document_metadata = {}
+            if document.doc_type:
+                document_metadata["doc_type"] = document.doc_type
+            if document.extracted_name:
+                document_metadata["extracted_name"] = document.extracted_name
+            
+            # Process PDF
+            result = await processor.process_pdf(
+                file_content=file_content,
+                filename=filename or document.filename,
+                original_filename=original_filename or document.original_filename,
+                mime_type=mime_type or document.mime_type,
+                processing_options=processing_options,
+                document_metadata=document_metadata,
+                document_id=str(document_uuid)  # Pass actual document ID
+            )
+            
+            # Update document with results
+            document.status = "completed"
+            document.processed_at = datetime.now(timezone.utc)
+            document.page_count = result.page_count
+            document.table_count = result.table_count
+            document.image_count = result.image_count
+            chunk_ids = getattr(result, 'chunk_ids', None)
+            if isinstance(chunk_ids, list):
+                import json
+                document.chunk_ids = json.dumps(chunk_ids).encode('utf-8')
+            else:
+                document.chunk_ids = chunk_ids or b""
+            
+            # Extract text from chunks
+            if result.chunks:
+                document.extracted_text = " ".join([chunk.text for chunk in result.chunks])
+
+            if document.extracted_text:
+                metadata_service = DocumentMetadataService()
+                meta_result = await metadata_service.classify_and_extract(
+                    text=document.extracted_text,
+                    filename=document.original_filename,
+                )
+                document.doc_type = meta_result.doc_type
+                document.extracted_name = meta_result.extracted_name
+                document.extracted_metadata = meta_result.extracted_metadata
+
+            await session.commit()
+            
+            logger.info(
+                "Document %s processed: %d pages, %d chunks, %d tables, %d images",
+                document_id, result.page_count, result.chunk_count, 
+                result.table_count, result.image_count
+            )
+            
+            return {
+                "document_id": document_id,
+                "status": "completed",
+                "page_count": result.page_count,
+                "chunk_count": result.chunk_count,
+                "table_count": result.table_count,
+                "image_count": result.image_count,
+                "processing_time": result.processing_time
+            }
+            
+        except Exception as e:
+            # Update document status to failed
+            document.status = "failed"
+            document.has_errors = True
+            document.error_message = str(e)
+            document.processed_at = datetime.now(timezone.utc)
+            await session.commit()
+            
+            logger.error(f"Document {document_id} processing failed: {e}")
+            raise
 
 
 def _run_process_episode(episode_id: str) -> dict:

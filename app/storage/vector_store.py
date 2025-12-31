@@ -15,17 +15,17 @@ logger = logging.getLogger(__name__)
 
 class VectorStore:
     """
-    Qdrant vector store for podcast transcript chunks.
+    Qdrant vector store for document and podcast chunks.
     """
     
-    def __init__(self):
+    def __init__(self, collection_name: str = "document_chunks"):
         # Connect to Qdrant
         self.client = QdrantClient(
             host="localhost",  # Force localhost for local dev
             port=6333,
             # api_key=settings.qdrant_api_key  # Disabled for local dev
         )
-        self.collection_name = "podcast_chunks"
+        self.collection_name = collection_name
         
     async def ensure_collection(self, vector_size: int = 1536) -> None:
         """
@@ -50,7 +50,7 @@ class VectorStore:
         self, 
         chunks: List[Chunk], 
         embeddings: List[List[float]],
-        episode_id: str,
+        document_id: str,
         metadata: Optional[Dict[str, Any]] = None
     ) -> List[str]:
         """
@@ -59,7 +59,7 @@ class VectorStore:
         Args:
             chunks: List of text chunks
             embeddings: List of embedding vectors
-            episode_id: Episode UUID
+            document_id: Document UUID (or episode_id for podcasts)
             metadata: Additional metadata to store
             
         Returns:
@@ -79,10 +79,10 @@ class VectorStore:
             
             # Prepare point metadata
             point_metadata = {
-                "episode_id": episode_id,
+                "document_id": document_id,
                 "chunk_index": i,
                 "text": chunk.text,
-                "source_type": "podcast",
+                "source_type": chunk.metadata.get("source_type", "document"),
             }
             
             # Add chunk-specific metadata
@@ -106,7 +106,7 @@ class VectorStore:
             points=points
         )
         
-        logger.info("Stored %d chunks in Qdrant for episode %s", len(chunks), episode_id)
+        logger.info("Stored %d chunks in Qdrant for document %s", len(chunks), document_id)
         return chunk_ids
     
     async def search_similar(
@@ -114,7 +114,7 @@ class VectorStore:
         query_embedding: List[float],
         limit: int = 10,
         score_threshold: float = 0.7,
-        episode_filter: Optional[str] = None
+        document_filter: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Search for similar chunks.
@@ -123,19 +123,19 @@ class VectorStore:
             query_embedding: Embedding of the query
             limit: Maximum number of results
             score_threshold: Minimum similarity score
-            episode_filter: Optional episode ID to filter by
+            document_filter: Optional document ID to filter by
             
         Returns:
             List of search results with metadata
         """
-        # Build filter if episode_id is provided
+        # Build filter if document_id is provided
         query_filter = None
-        if episode_filter:
+        if document_filter:
             query_filter = Filter(
                 must=[
                     FieldCondition(
-                        key="episode_id",
-                        match=MatchValue(value=episode_filter)
+                        key="document_id",
+                        match=MatchValue(value=document_filter)
                     )
                 ]
             )
@@ -156,32 +156,32 @@ class VectorStore:
                 "chunk_id": hit.id,
                 "score": hit.score,
                 "text": hit.payload.get("text"),
-                "episode_id": hit.payload.get("episode_id"),
+                "document_id": hit.payload.get("document_id"),
                 "chunk_index": hit.payload.get("chunk_index"),
                 "metadata": {
                     k: v for k, v in hit.payload.items() 
-                    if k not in ["text", "episode_id", "chunk_index"]
+                    if k not in ["text", "document_id", "chunk_index"]
                 }
             })
         
         logger.info("Found %d similar chunks for query", len(results))
         return results
     
-    async def get_chunks_by_episode(self, episode_id: str) -> List[Dict[str, Any]]:
+    async def get_chunks_by_document(self, document_id: str) -> List[Dict[str, Any]]:
         """
-        Retrieve all chunks for a specific episode.
+        Retrieve all chunks for a specific document.
         """
-        # Build filter for episode
+        # Build filter for document
         query_filter = Filter(
             must=[
                 FieldCondition(
-                    key="episode_id",
-                    match=MatchValue(value=episode_id)
+                    key="document_id",
+                    match=MatchValue(value=document_id)
                 )
             ]
         )
         
-        # Retrieve all points for the episode
+        # Retrieve all points for the document
         scroll_result = self.client.scroll(
             collection_name=self.collection_name,
             scroll_filter=query_filter,
@@ -203,18 +203,18 @@ class VectorStore:
         # Sort by chunk_index
         chunks.sort(key=lambda x: x["chunk_index"])
         
-        logger.info("Retrieved %d chunks for episode %s", len(chunks), episode_id)
+        logger.info("Retrieved %d chunks for document %s", len(chunks), document_id)
         return chunks
     
-    async def delete_episode_chunks(self, episode_id: str) -> None:
+    async def delete_document_chunks(self, document_id: str) -> None:
         """
-        Delete all chunks for a specific episode.
+        Delete all chunks for a specific document.
         """
         query_filter = Filter(
             must=[
                 FieldCondition(
-                    key="episode_id",
-                    match=MatchValue(value=episode_id)
+                    key="document_id",
+                    match=MatchValue(value=document_id)
                 )
             ]
         )
@@ -224,4 +224,4 @@ class VectorStore:
             points_selector=query_filter
         )
         
-        logger.info("Deleted chunks for episode %s", episode_id)
+        logger.info("Deleted chunks for document %s", document_id)
