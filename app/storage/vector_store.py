@@ -5,7 +5,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue, QueryRequest, Vector
 
 from app.config import settings
 from app.ingestion.chunker import Chunk
@@ -140,30 +140,83 @@ class VectorStore:
                 ]
             )
         
-        # Search in Qdrant
-        search_result = self.client.search(
+        # Search in Qdrant using query_points
+        search_result = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_embedding,
+            query=query_embedding,  # Pass the list directly
             query_filter=query_filter,
             limit=limit,
-            score_threshold=score_threshold
+            score_threshold=score_threshold,
+            with_vectors=True  # IMPORTANT: Request vectors to be returned
         )
         
         # Format results
         results = []
-        for hit in search_result:
-            results.append({
-                "chunk_id": hit.id,
-                "score": hit.score,
-                "text": hit.payload.get("text"),
-                "document_id": hit.payload.get("document_id"),
-                "chunk_index": hit.payload.get("chunk_index"),
-                "metadata": {
-                    k: v for k, v in hit.payload.items() 
-                    if k not in ["text", "document_id", "chunk_index"]
-                }
-            })
         
+        # Handle different response formats
+        if hasattr(search_result, 'points'):
+            # If it's a QueryResponse with points attribute
+            points = search_result.points
+            for point in points:
+                # Point is a ScoredPoint object with id, payload, score, version attributes
+                if hasattr(point, 'id') and hasattr(point, 'payload'):
+                    point_id = point.id
+                    point_payload = point.payload
+                    point_score = point.score  # Get the similarity score
+                    point_vector = point.vector if hasattr(point, 'vector') else None
+                    
+                    results.append({
+                        "chunk_id": str(point_id),
+                        "score": point_score,
+                        "text": point_payload.get("text", ""),
+                        "document_id": point_payload.get("document_id", ""),
+                        "chunk_index": point_payload.get("chunk_index", 0),
+                        "metadata": {
+                            k: v for k, v in point_payload.items() 
+                            if k not in ["text", "document_id", "chunk_index", "source_type"]
+                        }
+                    })
+                else:
+                    logger.warning(f"Point missing attributes: {point}")
+        elif hasattr(search_result, '__iter__') and len(search_result) > 0:
+            # Legacy format handling
+            points = search_result[0]
+            for point in points:
+                if hasattr(point, 'id') and hasattr(point, 'payload'):
+                    point_id = point.id
+                    point_payload = point.payload
+                    point_vector = point.vector if hasattr(point, 'vector') else None
+                    
+                    results.append({
+                        "chunk_id": str(point_id),
+                        "score": 0.0,  # Score not available in this format
+                        "text": point_payload.get("text", ""),
+                        "document_id": point_payload.get("document_id", ""),
+                        "chunk_index": point_payload.get("chunk_index", 0),
+                        "metadata": {
+                            k: v for k, v in point_payload.items() 
+                            if k not in ["text", "document_id", "chunk_index"]
+                        }
+                    })
+        elif hasattr(search_result, '__iter__'):
+            # If it's iterable (list of point objects)
+            for hit in search_result:
+                if hasattr(hit, 'id') and hasattr(hit, 'payload'):
+                    results.append({
+                        "chunk_id": hit.id,
+                        "score": hit.score if hasattr(hit, 'score') else 0.0,
+                        "text": hit.payload.get("text", ""),
+                        "document_id": hit.payload.get("document_id", ""),
+                        "chunk_index": hit.payload.get("chunk_index", 0),
+                        "metadata": {
+                            k: v for k, v in hit.payload.items() 
+                            if k not in ["text", "document_id", "chunk_index"]
+                        }
+                    })
+        else:
+            # If it's a single response object
+            logger.warning("Unexpected search result format: %s", type(search_result))
+            
         logger.info("Found %d similar chunks for query", len(results))
         return results
     

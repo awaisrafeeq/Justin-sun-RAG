@@ -1,0 +1,73 @@
+PS D:\Asif\Code File\AsifShah_MultiAgentsSystem\rag_chatbot_rebuild\Justin-sun-RAG> .\.venv\Scripts\python.exe test_day11.py 
+🚀 Starting Day 11 Semantic Search + Disambiguation Tests
+
+🔍 Testing Query Embedding Service...
+✅ Single query embedded: 1536 dimensions
+   Query: 'What is LangChain and how does it work?'
+   First 5 values: [-0.01628810539841652, -0.009280573576688766, -0.02254808507859707, 0.003941356670111418, 0.011310508474707603]
+✅ Query normalization works: 'What is LangChain?'
+✅ Multiple queries embedded: 3 embeddings
+   Each has 1536 dimensions
+
+🔍 Testing Semantic Search Service...
+✅ Basic search completed:
+   Query: 'LangChain memory'
+   Results found: 2
+   Processing time: 496.92ms
+   Top result score: 0.611
+   Top result source: langchain_lecture_1.pdf
+   Top result section: None
+✅ Filtered search completed:
+   Results with doc_type='article': 3
+   Filters applied: {'doc_type': 'article'}
+
+🔍 Testing Disambiguation Service...
+✅ Disambiguation completed:
+   Entity groups found: 0
+   Needs disambiguation: False
+
+🔍 Testing Context Builder Service...
+✅ Context building completed:
+   Total tokens: 892
+   Chunks included: 1
+   Sources: ['langchain_lecture_1.pdf']
+   Sections: ['abstract']
+   Truncated: True
+   Dropped results: 3
+✅ Token estimation: 9 tokens for 'This is a sample text for token estimat
+ion.'
+✅ Text truncation: 95 chars (was 880)
+
+🔍 Testing API Endpoints...
+✅ Search API endpoint working:
+   Status: 200
+   Results: 2
+   Processing time: 1036.57ms
+✅ Disambiguation API endpoint working:
+   Status: 200
+   Needs disambiguation: True
+   Options: 2
+✅ Filters API endpoint working:
+   Available doc_types: ['article', 'cv', 'report', 'other']
+   Available source_types: ['pdf', 'transcript', 'document']
+
+============================================================
+📊 DAY 11 TEST SUMMARY
+============================================================
+✅ PASS: Query Embedding
+✅ PASS: Semantic Search
+✅ PASS: Disambiguation
+✅ PASS: Context Builder
+✅ PASS: API Endpoints
+
+Overall: 5/5 tests passed
+🎉 All Day 11 tests passed! Semantic search is working correctly.        
+
+Day 11 Features Implemented:
+✅ Query embedding with OpenAI
+✅ Vector search with relevance threshold
+✅ Metadata filters (doc_type, source_type, etc.)
+✅ Disambiguation logic for multiple entities
+✅ Context builder with token limits
+✅ Search API endpoints
+✅ Comprehensive error handling
