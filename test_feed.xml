@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test RSS Feed</title>
+    <description>A simple test RSS feed</description>
+    <item>
+      <title>Test Episode 1</title>
+      <description>This is a test episode</description>
+      <guid>test-episode-1</guid>
+      <pubDate>Mon, 05 Jan 2026 12:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Test Episode 2</title>
+      <description>Another test episode</description>
+      <guid>test-episode-2</guid>
+      <pubDate>Mon, 05 Jan 2026 11:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

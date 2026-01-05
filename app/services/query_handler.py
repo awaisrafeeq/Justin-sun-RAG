@@ -130,6 +130,9 @@ class QueryHandlerService:
             # Calculate processing time
             processing_time = (time.time() - start_time) * 1000
             
+            # Calculate confidence score
+            confidence_score = self._calculate_confidence_score(search_results, request.relevance_threshold)
+            
             # Build response
             response = QueryHandlerResponse(
                 query=request.query,
@@ -144,7 +147,8 @@ class QueryHandlerService:
                     "filters_applied": request.filters or {},
                     "context_truncated": len(context_window.chunks) < len(search_results),
                     "dropped_results": len(search_results) - len(context_window.chunks),
-                    "entity_groups": len(entity_groups)
+                    "entity_groups": len(entity_groups),
+                    "confidence_score": confidence_score
                 },
                 processing_time_ms=processing_time,
                 total_tokens=context_window.total_tokens,
@@ -238,3 +242,22 @@ class QueryHandlerService:
                 "metadata": option.metadata
             })
         return options_dict
+    
+    def _calculate_confidence_score(self, search_results, relevance_threshold):
+        """Calculate confidence score based on search results."""
+        if not search_results:
+            return 0.0
+        
+        # Average score of results
+        avg_score = sum(result.score for result in search_results) / len(search_results)
+        
+        # Number of results factor
+        results_factor = min(len(search_results) / 10, 1.0)
+        
+        # Relevance threshold factor
+        threshold_factor = 1.0 if avg_score >= relevance_threshold else avg_score / relevance_threshold
+        
+        # Combined confidence
+        confidence = (avg_score * 0.5) + (results_factor * 0.3) + (threshold_factor * 0.2)
+        
+        return round(min(confidence, 1.0), 3)
