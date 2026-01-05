@@ -34,9 +34,13 @@ class ParsedFeed:
     episodes: List[ParsedEpisode]
 
 
-async def ingest_feed(session: AsyncSession, feed_url: str) -> tuple[RSSFeed, List[Episode]]:
+async def ingest_feed(session: AsyncSession, feed_url: str) -> tuple[RSSFeed, list[Episode]]:
     """
-    Parse an RSS feed, upsert the RSSFeed row, and insert any new episodes.
+    Ingest RSS feed and sync episodes.
+    
+    Args:
+        session: Database session
+        feed_url: URL of the RSS feed to ingest
 
     Returns:
         tuple of (RSSFeed instance, number of new episodes created)
@@ -44,44 +48,58 @@ async def ingest_feed(session: AsyncSession, feed_url: str) -> tuple[RSSFeed, Li
     parsed_feed = await fetch_feed(feed_url)
     feed = await upsert_feed(session, parsed_feed)
     new_episodes = await sync_episodes(session, feed, parsed_feed.episodes)
-    feed.total_episodes = (feed.total_episodes or 0) + len(new_episodes)
-    feed.last_fetched_at = datetime.now(timezone.utc)
+    # Update last_fetched via updated_at (automatic)
     return feed, new_episodes
 
 
 async def fetch_feed(feed_url: str) -> ParsedFeed:
     validated_url = validate_feed_url(feed_url)
     logger.info("Fetching RSS feed: %s", validated_url)
-    parsed = await asyncio.to_thread(feedparser.parse, validated_url)
     
-    # Check if feed was parsed successfully
-    if not hasattr(parsed, 'version') or not parsed.version:
-        raise ValueError(f"Failed to parse RSS feed: {validated_url}")
+    try:
+        parsed = await asyncio.to_thread(feedparser.parse, validated_url)
+        
+        # Debug: Check what we got
+        logger.info("Feed parser result: bozo=%s, version=%s, entries=%d", 
+                   getattr(parsed, 'bozo', 'unknown'), 
+                   getattr(parsed, 'version', 'none'), 
+                   len(getattr(parsed, 'entries', [])))
+        
+        # Check if feed was parsed successfully
+        if not hasattr(parsed, 'version') or not parsed.version:
+            # Try to get more debug info
+            bozo = getattr(parsed, 'bozo', False)
+            if bozo:
+                bozo_exception = getattr(parsed, 'bozo_exception', None)
+                logger.error("Feed parsing bozo exception: %s", bozo_exception)
+            raise ValueError(f"Failed to parse RSS feed: {validated_url}")
 
-    feed_info = parsed.feed or {}
-    episodes = [build_episode(entry) for entry in parsed.entries]
-    logger.info("Parsed %s entries from feed %s", len(episodes), validated_url)
-    return ParsedFeed(
-        url=validated_url,
-        title=feed_info.get("title"),
-        description=feed_info.get("subtitle") or feed_info.get("description"),
-        episodes=episodes,
-    )
+        feed_info = parsed.feed or {}
+        episodes = [build_episode(entry) for entry in parsed.entries]
+        logger.info("Parsed %s entries from feed %s", len(episodes), validated_url)
+        return ParsedFeed(
+            url=validated_url,
+            title=feed_info.get("title"),
+            description=feed_info.get("subtitle") or feed_info.get("description"),
+            episodes=episodes,
+        )
+    except Exception as e:
+        logger.error("Error fetching feed %s: %s", validated_url, str(e))
+        raise ValueError(f"Failed to fetch or parse RSS feed: {validated_url} - {str(e)}")
 
 
 async def upsert_feed(session: AsyncSession, parsed_feed: ParsedFeed) -> RSSFeed:
-    result = await session.execute(select(RSSFeed).where(RSSFeed.feed_url == parsed_feed.url))
+    result = await session.execute(select(RSSFeed).where(RSSFeed.url == parsed_feed.url))
     feed = result.scalars().first()
     if feed:
-        feed.feed_title = parsed_feed.title
-        feed.feed_description = parsed_feed.description
+        feed.title = parsed_feed.title
+        feed.description = parsed_feed.description
         return feed
 
     feed = RSSFeed(
-        feed_url=parsed_feed.url,
-        feed_title=parsed_feed.title,
-        feed_description=parsed_feed.description,
-        total_episodes=len(parsed_feed.episodes),
+        url=parsed_feed.url,
+        title=parsed_feed.title,
+        description=parsed_feed.description,
     )
     session.add(feed)
     await session.flush()
@@ -108,7 +126,7 @@ async def sync_episodes(
         )
         session.add(episode)
         new_records.append(episode)
-    logger.info("Detected %s new episodes for feed %s", len(new_records), feed.feed_url)
+    logger.info("Detected %s new episodes for feed %s", len(new_records), feed.url)
     if new_records:
         await session.flush()
     return new_records

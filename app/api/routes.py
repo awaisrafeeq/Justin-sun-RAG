@@ -29,10 +29,17 @@ async def list_feeds(db: AsyncSession = Depends(get_db)):
 
 @router.post("/feeds")
 async def add_feed(payload: dict, db: AsyncSession = Depends(get_db)):
-    feed, new_episodes = await ingest_feed(db, str(payload.url))
-    await db.commit()
-    await db.refresh(feed)
-    return feed
+    try:
+        feed, new_episodes = await ingest_feed(db, str(payload.get("url")))
+        await db.commit()
+        await db.refresh(feed)
+        return feed
+    except ValueError as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.get("/feeds/{feed_id}")
